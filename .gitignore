@@ -116,3 +116,7 @@ nfs
 nfs_fixbug
 data
 work_dir
+*.jpg
+*.pth
+*.jpeg
+*.jpeg

@@ -64,16 +64,33 @@ class Tester:
             result, log_dict = self.model(mode='infer', cai_mode=cai_mode, process_num=process_num, tile_cfg=tile_cfg, **batch_data_collect) # might use test/val to split cases
             
             if self.runner_info.save:
-                
-                if self.runner_info.gray_scale:
-                    color_pred = colorize(result, cmap='gray_r')[:, :, [2, 1, 0]]
-                else:
-                    color_pred = colorize(result, cmap='magma_r')[:, :, [2, 1, 0]]
+
+                color_pred = colorize(result, cmap='gray_r')[:, :, [2, 1, 0]]
                 cv2.imwrite(os.path.join(self.runner_info.work_dir, '{}.png'.format(batch_data['img_file_basename'][0])), color_pred)
-            
-                # Save as PNG
-                raw_depth = Image.fromarray((result.clone().squeeze().detach().cpu().numpy()*256).astype('uint16'))
-                raw_depth.save(os.path.join(self.runner_info.work_dir, '{}_uint16.png'.format(batch_data['img_file_basename'][0])))
+
+                # Save log-scaled and inverted 0-255 grayscale depth map as PNG (closer = whiter, non-linear scale)
+                depth_array_float32 = result.clone().squeeze().detach().cpu().numpy().astype(np.float32)
+                min_depth_val = np.min(depth_array_float32)
+                max_depth_val = np.max(depth_array_float32)
+
+                # 1. Logarithmic Scaling (using np.log1p to handle values near zero)
+                depth_array_log_scaled = np.log1p(depth_array_float32) # log(1 + depth)
+
+                # 2. Rescale Log-Scaled Values to 0-1 (using min-max of log-scaled values)
+                min_log_depth = np.min(depth_array_log_scaled)
+                max_log_depth = np.max(depth_array_log_scaled)
+
+                if max_log_depth > min_log_depth:
+                    depth_array_log_rescaled_0_1 = (depth_array_log_scaled - min_log_depth) / (max_log_depth - min_log_depth)
+                    depth_array_rescaled_0_255 = (depth_array_log_rescaled_0_1 * 255).astype(np.uint8)
+                else:
+                    depth_array_rescaled_0_255 = np.zeros_like(depth_array_log_scaled, dtype=np.uint8)
+
+                # 3. Invert grayscale (closer = whiter)
+                depth_array_inverted_0_255 = 255 - depth_array_rescaled_0_255
+
+                rescaled_depth_image_pil = Image.fromarray(depth_array_inverted_0_255, mode='L') # 'L' mode for grayscale
+                rescaled_depth_image_pil.save(os.path.join(self.runner_info.work_dir, '{}_depth_0_255_log_closer_white.png'.format(batch_data['img_file_basename'][0])))
 
             if batch_data_collect.get('depth_gt', None) is not None:
                 metrics = dataset.get_metrics(

@@ -19,8 +19,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train a segmentor')
     parser.add_argument('config', help='train config file path')
     parser.add_argument(
-        '--work-dir', 
-        help='the dir to save logs and models', 
+        '--work-dir',
+        help='the dir to save logs and models',
         default=None)
     parser.add_argument(
         '--test-type',
@@ -42,7 +42,7 @@ def parse_args():
         default=False,
         help='save colored prediction & depth predictions')
     parser.add_argument(
-        '--cai-mode', 
+        '--cai-mode',
         type=str,
         default='m1',
         help='m1, m2, or rx')
@@ -82,7 +82,7 @@ def parse_args():
         help='job launcher')
     # When using PyTorch version >= 2.0.0, the `torch.distributed.launch`
     # will pass the `--local-rank` parameter to `tools/train.py` instead
-    # of `--local_rank`.
+    # of `--local-rank`.
     parser.add_argument('--local_rank', '--local-rank', type=int, default=0)
     args = parser.parse_args()
     if 'LOCAL_RANK' not in os.environ:
@@ -95,10 +95,10 @@ def main():
 
     image_raw_shape=[int(num) for num in args.image_raw_shape]
     patch_split_num=[int(num) for num in args.patch_split_num]
-        
+
     # load config
     cfg = Config.fromfile(args.config)
-    
+
     cfg.launcher = args.launcher
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
@@ -114,14 +114,14 @@ def main():
         else:
             args.work_dir = osp.join('work_dir', args.ckp_path.split('/')[1])
         cfg.work_dir = args.work_dir
-        
+
     mkdir_or_exist(cfg.work_dir)
     cfg.ckp_path = args.ckp_path
-    
+
     # fix seed
     seed = cfg.get('seed', 5621)
     fix_random_seed(seed)
-    
+
     # start dist training
     if cfg.launcher == 'none':
         distributed = False
@@ -134,7 +134,7 @@ def main():
         distributed = True
         env_cfg = cfg.get('env_cfg', dict(dist_cfg=dict(backend='nccl')))
         rank, world_size, timestamp = setup_env(env_cfg, distributed, cfg.launcher)
-    
+
     # build dataloader
     if args.test_type == 'consistency':
         dataloader_config = cfg.val_consistency_dataloader
@@ -154,9 +154,9 @@ def main():
     else:
         dataloader_config = cfg.val_dataloader
         dataset = build_dataset(cfg.val_dataloader.dataset)
-    
+
     dataset.image_resolution = image_raw_shape
-    
+
     # extract experiment name from cmd
     config_path = args.config
     exp_cfg_filename = config_path.split('/')[-1].split('.')[0]
@@ -164,7 +164,7 @@ def main():
     dataset_name = dataset.dataset_name
     # log_filename = 'eval_{}_{}_{}_{}.log'.format(timestamp, exp_cfg_filename, ckp_name, dataset_name)
     log_filename = 'eval_{}_{}_{}_{}_{}.log'.format(exp_cfg_filename, args.tag, ckp_name, dataset_name, timestamp)
-    
+
     # prepare basic text logger
     log_file = osp.join(args.work_dir, log_filename)
     log_cfg = dict(log_level='INFO', log_file=log_file)
@@ -176,7 +176,7 @@ def main():
     # be continuously updated during the lifespan of the runner.
     log_cfg.setdefault('file_mode', 'a')
     logger = MMLogger.get_instance(**log_cfg)
-    
+
     # save some information useful during the training
     runner_info = RunnerInfo()
     runner_info.config = cfg # ideally, cfg should not be changed during process. information should be temp saved in runner_info
@@ -191,30 +191,38 @@ def main():
     runner_info.save = args.save
     runner_info.log_filename = log_filename
     runner_info.gray_scale = args.gray_scale
-    
+
     if runner_info.save:
         mkdir_or_exist(args.work_dir)
         runner_info.work_dir = args.work_dir
     # log_env(cfg, env_cfg, runner_info, logger)
-    
+
     # build model
+    if torch.cuda.is_available():
+        DEVICE = torch.device('cuda:0')  # Explicit CUDA device 0
+    else:
+        DEVICE = torch.device('cpu')
+
     if '.pth' in cfg.ckp_path:
         model = build_model(cfg.model)
         print_log('Checkpoint Path: {}. Loading from a local file'.format(cfg.ckp_path), logger='current')
         if hasattr(model, 'load_dict'):
-            print_log(model.load_dict(torch.load(cfg.ckp_path)['model_state_dict']), logger='current')
+            load_info = model.load_dict(torch.load(cfg.ckp_path)['model_state_dict'])
+            print_log(load_info, logger='current')
         else:
-            print_log(model.load_state_dict(torch.load(cfg.ckp_path)['model_state_dict'], strict=True), logger='current')
+            load_info = model.load_state_dict(torch.load(cfg.ckp_path)['model_state_dict'], strict=True)
+            print_log(load_info, logger='current')
     else:
         print_log('Checkpoint Path: {}. Loading from the huggingface repo'.format(cfg.ckp_path), logger='current')
         assert cfg.ckp_path in \
-            ['Zhyever/patchfusion_depth_anything_vits14', 
-             'Zhyever/patchfusion_depth_anything_vitb14', 
-             'Zhyever/patchfusion_depth_anything_vitl14', 
+            ['Zhyever/patchfusion_depth_anything_vits14',
+             'Zhyever/patchfusion_depth_anything_vitb14',
+             'Zhyever/patchfusion_depth_anything_vitl14',
              'Zhyever/patchfusion_zoedepth'], 'Invalid model name'
         model = PatchFusion.from_pretrained(cfg.ckp_path)
+
     model.eval()
-    
+
     if runner_info.distributed:
         torch.cuda.set_device(runner_info.rank)
         model.cuda(runner_info.rank)
@@ -222,13 +230,20 @@ def main():
                                                           find_unused_parameters=cfg.get('find_unused_parameters', False))
         logger.info(model)
     else:
-        model.cuda()
-        
+        if torch.cuda.is_available():
+            device = torch.device('cuda:0') # Explicitly set to CUDA device 0
+            model.to(device) # Move model to GPU
+            print_log(f"Using CUDA device: {torch.cuda.get_device_name(0)}", logger='current') # Confirmation log
+        else:
+            device = torch.device('cpu')
+            model.to(device)
+            print_log("CUDA not available, using CPU!", logger='current')
+
     if runner_info.distributed:
         val_sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=False)
     else:
         val_sampler = None
-    
+
     val_dataloader = DataLoader(
         dataset,
         batch_size=1,
@@ -244,7 +259,7 @@ def main():
         runner_info=runner_info,
         dataloader=val_dataloader,
         model=model)
-    
+
     if args.test_type == 'consistency':
         tester.run_consistency()
     else:
