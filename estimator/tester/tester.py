@@ -64,10 +64,6 @@ class Tester:
             result, log_dict = self.model(mode='infer', cai_mode=cai_mode, process_num=process_num, tile_cfg=tile_cfg, **batch_data_collect) # might use test/val to split cases
             
             if self.runner_info.save:
-
-                color_pred = colorize(result, cmap='gray_r')[:, :, [2, 1, 0]]
-                cv2.imwrite(os.path.join(self.runner_info.work_dir, '{}.png'.format(batch_data['img_file_basename'][0])), color_pred)
-
                 # Save log-scaled and inverted 0-255 grayscale depth map as PNG (closer = whiter, non-linear scale)
                 depth_array_float32 = result.clone().squeeze().detach().cpu().numpy().astype(np.float32)
                 min_depth_val = np.min(depth_array_float32)
@@ -90,7 +86,7 @@ class Tester:
                 depth_array_inverted_0_255 = 255 - depth_array_rescaled_0_255
 
                 rescaled_depth_image_pil = Image.fromarray(depth_array_inverted_0_255, mode='L') # 'L' mode for grayscale
-                rescaled_depth_image_pil.save(os.path.join(self.runner_info.work_dir, '{}_depth_0_255_log_closer_white.png'.format(batch_data['img_file_basename'][0])))
+                rescaled_depth_image_pil.save(os.path.join(self.runner_info.work_dir, '{}_dpf.png'.format(batch_data['img_file_basename'][0])))
 
             if batch_data_collect.get('depth_gt', None) is not None:
                 metrics = dataset.get_metrics(

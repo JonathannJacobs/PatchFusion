@@ -120,3 +120,5 @@ work_dir
 *.pth
 *.jpeg
 *.jpeg
+*.safetensors
+*.png
