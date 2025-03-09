@@ -27,7 +27,7 @@ from estimator.models.builder import build_model # Import build_model
 from mmengine import print_log # For logging (optional, can use standard print)
 import time # For timing (optional)
 # --- ADDED IMPORT for ResizeDA ---
-from depth_anything.transform import Resize as ResizeDA 
+from depth_anything.transform import Resize as ResizeDA
 
 class Predictor(BasePredictor):
     def setup(self):
@@ -80,8 +80,8 @@ class Predictor(BasePredictor):
         network_process_size = (392, 518)
         net_h, net_w = network_process_size[0], network_process_size[1]
         self.resize = ResizeDA( # Use ResizeDA for 'depth-anything' mode
-            net_w, net_h, 
-            keep_aspect_ratio=False, 
+            net_w, net_h,
+            keep_aspect_ratio=False,
             ensure_multiple_of=14,
             resize_method="minimal"
         )
@@ -92,6 +92,9 @@ class Predictor(BasePredictor):
 
     def predict(self,
             image: Path = Input(description="Input image for depth estimation"),
+            patch_split_x: int = Input(description="Patch split X dimension (minimal value is 2)", default=3, ge=2),
+            patch_split_y: int = Input(description="Patch split Y dimension (minimal value is 2)", default=3, ge=2),
+            num_process: int = Input(description="Number of processes (minimal value is 1)", default=1, ge=1),
             ) -> Path:
         """Run depth estimation with PatchFusion and return path to depth map JPG."""
         print(f"Processing image: {image}")
@@ -104,9 +107,8 @@ class Predictor(BasePredictor):
         try:
             image_pil = Image.open(str(image)).convert('RGB')
             original_width, original_height = image_pil.size
-            patch_split_num = [2, 2]
+            patch_split_num = [patch_split_y, patch_split_x] # change to [patch_split_y, patch_split_x] to align with height and width
 
-            print("Calculating downscaled dimensions (multiples of patch split)...")
             downscale_factor_width = 2 * patch_split_num[1]
             downscale_factor_height = 2 * patch_split_num[0]
             new_width = (original_width // downscale_factor_width) * downscale_factor_width
@@ -121,14 +123,11 @@ class Predictor(BasePredictor):
             tile_cfg['image_raw_shape'] = [new_height, new_width]
             tile_cfg['patch_split_num'] = patch_split_num
 
-            print("Running PatchFusion prediction...")
-            print(f"Shape of image_lr: {image_lr.shape}") # Debug shape
-            print(f"Shape of image_hr: {image_hr.shape}") # Debug shape
             with torch.no_grad():
                 result, _ = self.model(
                     'infer', image_lr, image_hr,
                     cai_mode='r32',
-                    process_num=1,
+                    process_num=num_process, # use input num_process
                     tile_cfg=tile_cfg,
                 )
 
@@ -146,8 +145,8 @@ class Predictor(BasePredictor):
             output_dir = "output"
             os.makedirs(output_dir, exist_ok=True)
             input_filename = os.path.splitext(os.path.basename(str(image)))[0] # Extract filename without extension from input Path
-            patch_split_str = f"{patch_split_num[0]}x{patch_split_num[1]}" # Create patch_split_num string (e.g., "2x2")
-            output_depth_map_filename = f"{input_filename}_pf{patch_split_str}.webp"
+            patch_split_str = f"{patch_split_x}x{patch_split_y}" # Create patch_split_num string (e.g., "2x2")
+            output_depth_map_filename = f"{input_filename}_pf{patch_split_str}_p{num_process}.webp" # add num_process to filename
             output_depth_map_path = os.path.join(output_dir, output_depth_map_filename)
             rescaled_depth_image_pil.save(output_depth_map_path, format="WebP", lossless=True, quality=100) # Save rescaled depth map
 
