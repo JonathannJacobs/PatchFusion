@@ -8,9 +8,9 @@ build:
     - numpy==1.24.4  # Changed = to ==
     # - opencv=4.6.0
     - pip==23.3.2  # Changed = to ==
-    - torch==2.1.2 # Changed = to =
-    - torchaudio==2.1.2 # Changed = to ==
-    - torchvision==0.16.2 # Changed = to ==
+    - "torch==2.1.2 --extra-index-url https://download.pytorch.org/whl/cu118"
+    - "torchvision==0.16.2 --extra-index-url https://download.pytorch.org/whl/cu118"
+    - "torchaudio==2.1.2 --extra-index-url https://download.pytorch.org/whl/cu118"
     - json5==0.9.14 # Changed = to ==
     - einops==0.7.0 # Changed = to ==
     - scikit-image==0.20.0 # Changed = to ==
