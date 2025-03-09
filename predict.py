@@ -74,7 +74,6 @@ class Predictor(BasePredictor):
         print("Setting up preprocessing transforms (normalization)...")
         self.transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         print("Preprocessing transforms (normalization) setup complete.")
 
@@ -119,7 +118,7 @@ class Predictor(BasePredictor):
             print(f"Shape of image_lr: {image_lr.shape}") # Debug shape
             print(f"Shape of image_hr: {image_hr.shape}") # Debug shape
             with torch.no_grad():
-                depth_output, _ = self.model(
+                result, _ = self.model(
                     'infer',
                     image_lr=image_lr,
                     image_hr=image_hr,
@@ -128,36 +127,40 @@ class Predictor(BasePredictor):
                     tile_cfg=tile_cfg,
                 )
 
-            # --- 9. Postprocess Depth Map ---
-            print("Postprocessing depth map...")
-            depth_map = depth_output['depth_pred'].cpu().squeeze().numpy()
+            print(f"Shape of result before squeeze(): {result.shape}") # <--- ADD THIS DEBUG PRINT
+            # --- Postprocessing (Replicating tester.py's postprocessing) ---
+            print("Postprocessing depth map (replicating tester.py)...")
+            depth_array_float32 = result.clone().squeeze().detach().cpu().numpy().astype(np.float32)
+            min_depth_val = np.min(depth_array_float32)
+            max_depth_val = np.max(depth_array_float32)
 
-            depth_map_pil = Image.fromarray(depth_map).resize((original_width, original_height), Image.BILINEAR)
-            depth_map_resized = np.array(depth_map_pil)
+            # 1. Logarithmic Scaling
+            depth_array_log_scaled = np.log1p(depth_array_float32)
 
-            depth_min = depth_map_resized.min()
-            depth_max = depth_map_resized.max()
-            normalized_depth_map = (255 * (depth_map_resized - depth_min) / (depth_max - depth_min)).astype(np.uint8)
+            # 2. Rescale Log-Scaled Values to 0-255
+            min_log_depth = np.min(depth_array_log_scaled)
+            max_log_depth = np.max(depth_array_log_scaled)
+            if max_log_depth > min_log_depth:
+                depth_array_log_rescaled_0_1 = (depth_array_log_scaled - min_log_depth) / (max_log_depth - min_log_depth)
+                depth_array_rescaled_0_255 = (depth_array_log_rescaled_0_1 * 255).astype(np.uint8)
+            else:
+                depth_array_rescaled_0_255 = np.zeros_like(depth_array_log_scaled, dtype=np.uint8)
 
-            # --- 10. Save Depth Map as Image ---
+            # 3. Invert grayscale (closer = whiter)
+            depth_array_inverted_0_255 = 255 - depth_array_rescaled_0_255
+
+            rescaled_depth_image_pil = Image.fromarray(depth_array_inverted_0_255, mode='L') # Create PIL grayscale image
+            # --- NEW POSTPROCESSING BLOCK END
+
             output_dir = "output"
             os.makedirs(output_dir, exist_ok=True)
             output_depth_map_path = os.path.join(output_dir, "depth_map.webp")
-            depth_map_image_pil = Image.fromarray(normalized_depth_map, mode='L')
-            depth_map_image_pil.save(output_depth_map_path, format="WebP", lossless=True, quality=100)
+            rescaled_depth_image_pil.save(output_depth_map_path, format="WebP", lossless=True, quality=100) # Save rescaled depth map
 
             print(f"Prediction finished in {time.time() - start_time:.2f} seconds.")
-            return Path(output_depth_map_path)
-
-        except Exception as e:
-            print(f"Error during prediction: {e}")
-            raise
+            return Path(output_depth_map_path) # Return path to saved WEBP depth map
 
         finally:
             print("Cleaning up memory...")
-            if image_pil is not None:
-                image_pil.close()
-            if depth_map_image_pil is not None:
-                depth_map_image_pil.close()
             torch.cuda.empty_cache()
             print("Memory cleanup complete.")

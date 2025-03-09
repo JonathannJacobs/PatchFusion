@@ -122,3 +122,4 @@ work_dir
 *.jpeg
 *.safetensors
 *.png
+*.webp
