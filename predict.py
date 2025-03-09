@@ -32,9 +32,7 @@ from depth_anything.transform import Resize as ResizeDA
 class Predictor(BasePredictor):
     def setup(self):
         """Load the PatchFusion model and preprocessing transforms."""
-        print("Starting PatchFusion model setup (local checkpoint)...")
         start_time = time.time()
-
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # --- 1. Load Config ---
@@ -106,38 +104,36 @@ class Predictor(BasePredictor):
         try:
             image_pil = Image.open(str(image)).convert('RGB')
             original_width, original_height = image_pil.size
-            patch_split_num = [2, 2]
-            image_hr = self.transform(image_pil).unsqueeze(0).to(self.device)
+            patch_split_num = [4, 4]
+
+            print("Calculating downscaled dimensions (multiples of patch split)...")
+            downscale_factor_width = 2 * patch_split_num[1]
+            downscale_factor_height = 2 * patch_split_num[0]
+            new_width = (original_width // downscale_factor_width) * downscale_factor_width
+            new_height = (original_height // downscale_factor_height) * downscale_factor_height
+            downscaled_size = (new_width, new_height)
+            print(f"Original size: ({original_width}, {original_height}), Downscaled size: {downscaled_size}, patch_split_num: {patch_split_num}")
+            resized_image_pil = image_pil.resize(downscaled_size, Image.BICUBIC)
+
+            image_hr = self.transform(resized_image_pil).unsqueeze(0).to(self.device)
             image_lr = self.resize(image_hr)
             tile_cfg = dict()
-            tile_cfg['image_raw_shape'] = [original_height, original_width]
+            tile_cfg['image_raw_shape'] = [new_height, new_width]
             tile_cfg['patch_split_num'] = patch_split_num
 
-            # --- 8. Run PatchFusion Prediction ---
             print("Running PatchFusion prediction...")
             print(f"Shape of image_lr: {image_lr.shape}") # Debug shape
             print(f"Shape of image_hr: {image_hr.shape}") # Debug shape
             with torch.no_grad():
                 result, _ = self.model(
-                    'infer',
-                    image_lr=image_lr,
-                    image_hr=image_hr,
+                    'infer', image_lr, image_hr,
                     cai_mode='r32',
-                    process_num=2,
+                    process_num=1,
                     tile_cfg=tile_cfg,
                 )
 
-            print(f"Shape of result before squeeze(): {result.shape}") # <--- ADD THIS DEBUG PRINT
-            # --- Postprocessing (Replicating tester.py's postprocessing) ---
-            print("Postprocessing depth map (replicating tester.py)...")
             depth_array_float32 = result.clone().squeeze().detach().cpu().numpy().astype(np.float32)
-            min_depth_val = np.min(depth_array_float32)
-            max_depth_val = np.max(depth_array_float32)
-
-            # 1. Logarithmic Scaling
             depth_array_log_scaled = np.log1p(depth_array_float32)
-
-            # 2. Rescale Log-Scaled Values to 0-255
             min_log_depth = np.min(depth_array_log_scaled)
             max_log_depth = np.max(depth_array_log_scaled)
             if max_log_depth > min_log_depth:
@@ -145,12 +141,7 @@ class Predictor(BasePredictor):
                 depth_array_rescaled_0_255 = (depth_array_log_rescaled_0_1 * 255).astype(np.uint8)
             else:
                 depth_array_rescaled_0_255 = np.zeros_like(depth_array_log_scaled, dtype=np.uint8)
-
-            # 3. Invert grayscale (closer = whiter)
-            depth_array_inverted_0_255 = 255 - depth_array_rescaled_0_255
-
-            rescaled_depth_image_pil = Image.fromarray(depth_array_inverted_0_255, mode='L') # Create PIL grayscale image
-            # --- NEW POSTPROCESSING BLOCK END
+            rescaled_depth_image_pil = Image.fromarray(255 - depth_array_rescaled_0_255, mode='L')
 
             output_dir = "output"
             os.makedirs(output_dir, exist_ok=True)
