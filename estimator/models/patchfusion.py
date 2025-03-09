@@ -86,27 +86,15 @@ class PatchFusion(BaselinePretrain, PyTorchModelHubMixin):
         self.tile_cfg = self.prepare_tile_cfg(config.image_raw_shape, config.patch_split_num)
         
         self.coarse_branch_cfg = config.coarse_branch
-        if config.coarse_branch.type == 'ZoeDepth':
-            self.coarse_branch = ZoeDepth.build(**config.coarse_branch)
-            self.resizer = ResizeZoe(config.patch_process_shape[1], config.patch_process_shape[0], keep_aspect_ratio=False, ensure_multiple_of=32, resize_method="minimal")
-        elif config.coarse_branch.type == 'DA-ZoeDepth':
-            self.coarse_branch = ZoeDepth.build(**config.coarse_branch)
-            self.resizer = ResizeDA(config.patch_process_shape[1], config.patch_process_shape[0], keep_aspect_ratio=False, ensure_multiple_of=14, resize_method="minimal")
-        else:
-            raise NotImplementedError
-        
-        if config.fine_branch.type == 'ZoeDepth':
-            self.fine_branch = ZoeDepth.build(**config.fine_branch)
-        elif config.fine_branch.type == 'DA-ZoeDepth':
-            self.fine_branch = ZoeDepth.build(**config.fine_branch)
-        else:
-            raise NotImplementedError
-        
+        self.coarse_branch = ZoeDepth.build(**config.coarse_branch)
+        self.resizer = ResizeDA(config.patch_process_shape[1], config.patch_process_shape[0], keep_aspect_ratio=False, ensure_multiple_of=14, resize_method="minimal")
+        self.fine_branch = ZoeDepth.build(**config.fine_branch)
+
         if config.load_branch:
             print_log("Loading coarse_branch from {}".format(config.pretrain_model[0]), logger='current') 
-            print_log(self.coarse_branch.load_state_dict(torch.load(config.pretrain_model[0], map_location='cpu')['model_state_dict'], strict=True), logger='current') # coarse ckp
+            print_log(self.coarse_branch.load_state_dict(torch.load(config.pretrain_model[0], map_location='cpu', weights_only=False)['model_state_dict'], strict=True), logger='current') # coarse ckp
             print_log("Loading fine_branch from {}".format(config.pretrain_model[1]), logger='current')
-            print_log(self.fine_branch.load_state_dict(torch.load(config.pretrain_model[1], map_location='cpu')['model_state_dict'], strict=True), logger='current')
+            print_log(self.fine_branch.load_state_dict(torch.load(config.pretrain_model[1], map_location='cpu', weights_only=False)['model_state_dict'], strict=True), logger='current')
         
         # freeze all these parameters
         for param in self.coarse_branch.parameters():
@@ -128,38 +116,25 @@ class PatchFusion(BaselinePretrain, PyTorchModelHubMixin):
 
         self.guided_fusion = build_model(config.guided_fusion)
         
-        # NOTE: a decoder head
-        if self.coarse_branch_cfg.bin_centers_type == "normed":
-            SeedBinRegressorLayer = SeedBinRegressor
-            Attractor = AttractorLayer
-        elif self.coarse_branch_cfg.bin_centers_type == "softplus": # default
-            SeedBinRegressorLayer = SeedBinRegressorUnnormed
-            Attractor = AttractorLayerUnnormed
-        elif self.coarse_branch_cfg.bin_centers_type == "hybrid1":
-            SeedBinRegressorLayer = SeedBinRegressor
-            Attractor = AttractorLayerUnnormed
-        elif self.coarse_branch_cfg.bin_centers_type == "hybrid2":
-            SeedBinRegressorLayer = SeedBinRegressorUnnormed
-            Attractor = AttractorLayer
-        else:
-            raise ValueError(
-                "bin_centers_type should be one of 'normed', 'softplus', 'hybrid1', 'hybrid2'")
-        
+        SeedBinRegressorLayer = SeedBinRegressorUnnormed
+        Attractor = AttractorLayerUnnormed
+
         N_MIDAS_OUT = 32
         btlnck_features = self.fine_branch.core.output_channels[0]
         num_out_features = self.fine_branch.core.output_channels[1:] # all of them are the same
 
         self.seed_bin_regressor = SeedBinRegressorLayer(
-            btlnck_features, n_bins=self.coarse_branch_cfg.n_bins, min_depth=config.min_depth, max_depth=config.max_depth)
-        self.seed_projector = Projector(btlnck_features, self.coarse_branch_cfg.bin_embedding_dim)
+            btlnck_features, n_bins=64, min_depth=config.min_depth, max_depth=config.max_depth)
+        self.seed_projector = Projector(btlnck_features, 128)
         self.projectors = nn.ModuleList([
-            Projector(num_out, self.coarse_branch_cfg.bin_embedding_dim)
+            Projector(num_out, 128)
             for num_out in num_out_features
         ])
         # 1000, 2, inv, mean
+        n_attractors = [16, 8, 4, 1]
         self.attractors = nn.ModuleList([
-            Attractor(self.coarse_branch_cfg.bin_embedding_dim, self.coarse_branch_cfg.n_bins, n_attractors=self.coarse_branch_cfg.n_attractors[i], min_depth=config.min_depth, max_depth=config.max_depth,
-                      alpha=self.coarse_branch_cfg.attractor_alpha, gamma=self.coarse_branch_cfg.attractor_gamma, kind=self.coarse_branch_cfg.attractor_kind, attractor_type=self.coarse_branch_cfg.attractor_type)
+            Attractor(128, 64, n_attractors=n_attractors[i], min_depth=config.min_depth, max_depth=config.max_depth,
+                      alpha=1000, gamma=2, kind='mean', attractor_type='inv')
             for i in range(len(num_out_features))
         ])
         
@@ -167,7 +142,7 @@ class PatchFusion(BaselinePretrain, PyTorchModelHubMixin):
 
         # use log binomial instead of softmax
         self.conditional_log_binomial = ConditionalLogBinomial(
-            last_in, self.coarse_branch_cfg.bin_embedding_dim, n_classes=self.coarse_branch_cfg.n_bins, min_temp=self.coarse_branch_cfg.min_temp, max_temp=self.coarse_branch_cfg.max_temp)
+            last_in, 128, n_classes=64, min_temp=0.0212, max_temp=50.0)
         
         # NOTE: consistency training
         self.consistency_training = False
@@ -268,10 +243,6 @@ class PatchFusion(BaselinePretrain, PyTorchModelHubMixin):
         
         input_tensor = torch.cat([coarse_depth_roi, fine_depth_pred, crop_input], dim=1)
         
-        # HACK: hack for depth-anything
-        # if self.coarse_branch_cfg.type == 'DA-ZoeDepth':
-        #     input_tensor = F.interpolate(input_tensor, size=(448, 592), mode='bilinear', align_corners=True)
-            
         output = self.guided_fusion(
             input_tensor = input_tensor,
             guide_plus = feat_plus_list,
@@ -300,11 +271,7 @@ class PatchFusion(BaselinePretrain, PyTorchModelHubMixin):
         rel_cond = torch.zeros((bs, 1, h, w), device=last.device)
         _, seed_b_centers = self.seed_bin_regressor(x)
 
-        if self.coarse_branch_cfg.bin_centers_type == 'normed' or self.coarse_branch_cfg.bin_centers_type == 'hybrid2':
-            b_prev = (seed_b_centers - self.min_depth) / \
-                (self.max_depth - self.min_depth)
-        else:
-            b_prev = seed_b_centers
+        b_prev = seed_b_centers
 
         prev_b_embedding = self.seed_projector(x)
 

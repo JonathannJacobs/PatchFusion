@@ -56,7 +56,7 @@ class Predictor(BasePredictor):
 
         # --- 4. Load Model Weights ---
         print("Loading model weights from local checkpoint...")
-        checkpoint = torch.load(self.cfg.ckp_path)
+        checkpoint = torch.load(self.cfg.ckp_path, weights_only=False)
         state_dict = checkpoint.get('model_state_dict', checkpoint)
 
         if hasattr(model, 'load_dict'):
@@ -104,7 +104,7 @@ class Predictor(BasePredictor):
         try:
             image_pil = Image.open(str(image)).convert('RGB')
             original_width, original_height = image_pil.size
-            patch_split_num = [4, 4]
+            patch_split_num = [2, 2]
 
             print("Calculating downscaled dimensions (multiples of patch split)...")
             downscale_factor_width = 2 * patch_split_num[1]
@@ -145,7 +145,10 @@ class Predictor(BasePredictor):
 
             output_dir = "output"
             os.makedirs(output_dir, exist_ok=True)
-            output_depth_map_path = os.path.join(output_dir, "depth_map.webp")
+            input_filename = os.path.splitext(os.path.basename(str(image)))[0] # Extract filename without extension from input Path
+            patch_split_str = f"{patch_split_num[0]}x{patch_split_num[1]}" # Create patch_split_num string (e.g., "2x2")
+            output_depth_map_filename = f"{input_filename}_pf{patch_split_str}.webp"
+            output_depth_map_path = os.path.join(output_dir, output_depth_map_filename)
             rescaled_depth_image_pil.save(output_depth_map_path, format="WebP", lossless=True, quality=100) # Save rescaled depth map
 
             print(f"Prediction finished in {time.time() - start_time:.2f} seconds.")
